@@ -29,22 +29,23 @@ from torch.nn.parallel.distributed import DistributedDataParallel
 from torch.optim.optimizer import Optimizer
 
 import pytorch_lightning as pl
-from lightning_lite.plugins.environments.cluster_environment import ClusterEnvironment
-from lightning_lite.plugins.io.checkpoint_plugin import CheckpointIO
+from lightning_lite.plugins import CheckpointIO, ClusterEnvironment
+from lightning_lite.plugins.collectives.torch_collective import default_pg_timeout
+from lightning_lite.strategies.fairscale import _FAIRSCALE_AVAILABLE
 from lightning_lite.utilities.distributed import (
-    _get_process_group_backend_from_env,
-    distributed_available,
-    get_default_process_group_backend_for_device,
+    _distributed_available,
+    _get_default_process_group_backend_for_device,
+    _init_dist_connection,
+    _sync_ddp_if_available,
 )
 from lightning_lite.utilities.distributed import group as _group
-from lightning_lite.utilities.distributed import init_dist_connection, ReduceOp, sync_ddp_if_available
-from lightning_lite.utilities.optimizer import optimizers_to_device
+from lightning_lite.utilities.optimizer import _optimizers_to_device
 from lightning_lite.utilities.seed import reset_seed
+from lightning_lite.utilities.types import ReduceOp
 from pytorch_lightning.core.optimizer import LightningOptimizer
 from pytorch_lightning.overrides import LightningDistributedModule
 from pytorch_lightning.overrides.base import _LightningPrecisionModuleWrapperBase
 from pytorch_lightning.overrides.distributed import prepare_for_backward
-from pytorch_lightning.overrides.fairscale import _FAIRSCALE_AVAILABLE
 from pytorch_lightning.plugins.precision import PrecisionPlugin
 from pytorch_lightning.strategies.launchers.subprocess_script import _SubprocessScriptLauncher
 from pytorch_lightning.strategies.parallel import ParallelStrategy
@@ -63,11 +64,6 @@ else:
 if _TORCH_GREATER_EQUAL_1_10 and torch.distributed.is_available():
     from torch.distributed.algorithms.model_averaging.averagers import ModelAverager
 
-if torch.distributed.is_available():
-    from torch.distributed.constants import default_pg_timeout
-else:
-    default_pg_timeout = timedelta(seconds=1800)
-
 log = logging.getLogger(__name__)
 
 
@@ -78,7 +74,7 @@ class DDPStrategy(ParallelStrategy):
 
     def __init__(
         self,
-        accelerator: Optional["pl.accelerators.accelerator.Accelerator"] = None,
+        accelerator: Optional["pl.accelerators.Accelerator"] = None,
         parallel_devices: Optional[List[torch.device]] = None,
         cluster_environment: Optional[ClusterEnvironment] = None,
         checkpoint_io: Optional[CheckpointIO] = None,
@@ -136,8 +132,7 @@ class DDPStrategy(ParallelStrategy):
 
     @property
     def distributed_sampler_kwargs(self) -> Dict[str, Any]:
-        distributed_sampler_kwargs = dict(num_replicas=(self.num_nodes * self.num_processes), rank=self.global_rank)
-        return distributed_sampler_kwargs
+        return dict(num_replicas=(self.num_nodes * self.num_processes), rank=self.global_rank)
 
     @property
     def _is_single_process_single_device(self) -> bool:
@@ -184,7 +179,7 @@ class DDPStrategy(ParallelStrategy):
 
             # set up optimizers after the wrapped module has been moved to the device
             self.setup_optimizers(trainer)
-            optimizers_to_device(self.optimizers, self.root_device)
+            _optimizers_to_device(self.optimizers, self.root_device)
 
         if _TORCH_GREATER_EQUAL_1_10 and trainer_fn == TrainerFn.FITTING:
             import torch.distributed.algorithms.ddp_comm_hooks.post_localSGD_hook as post_localSGD
@@ -201,23 +196,14 @@ class DDPStrategy(ParallelStrategy):
     def setup_distributed(self) -> None:
         log.detail(f"{self.__class__.__name__}: setting up distributed...")
         reset_seed()
-
-        # determine which process we are and world size
         self.set_world_ranks()
-
-        # set warning rank
         rank_zero_only.rank = self.global_rank
-
         self._process_group_backend = self._get_process_group_backend()
         assert self.cluster_environment is not None
-        init_dist_connection(self.cluster_environment, self._process_group_backend, timeout=self._timeout)
+        _init_dist_connection(self.cluster_environment, self._process_group_backend, timeout=self._timeout)
 
     def _get_process_group_backend(self) -> str:
-        return (
-            self._process_group_backend
-            or _get_process_group_backend_from_env()
-            or get_default_process_group_backend_for_device(self.root_device)
-        )
+        return self._process_group_backend or _get_default_process_group_backend_for_device(self.root_device)
 
     def set_world_ranks(self) -> None:
         if self.cluster_environment is None:
@@ -314,7 +300,7 @@ class DDPStrategy(ParallelStrategy):
         return [self.root_device.index]
 
     def barrier(self, *args: Any, **kwargs: Any) -> None:
-        if not distributed_available():
+        if not _distributed_available():
             return
         if torch.distributed.get_backend() == "nccl":
             torch.distributed.barrier(device_ids=self.determine_ddp_device_ids())
@@ -356,7 +342,7 @@ class DDPStrategy(ParallelStrategy):
             reduced value, except when the input was not a tensor the output remains is unchanged
         """
         if isinstance(tensor, Tensor):
-            tensor = sync_ddp_if_available(tensor, group, reduce_op=reduce_op)
+            tensor = _sync_ddp_if_available(tensor, group, reduce_op=reduce_op)
         return tensor
 
     def training_step(self, *args: Any, **kwargs: Any) -> STEP_OUTPUT:

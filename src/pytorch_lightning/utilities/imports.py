@@ -20,15 +20,14 @@ import torch
 from lightning_utilities.core.imports import compare_version, module_available, package_available, RequirementCache
 
 _IS_WINDOWS = platform.system() == "Windows"
-_IS_INTERACTIVE = hasattr(sys, "ps1")  # https://stackoverflow.com/a/64523765
 _PYTHON_GREATER_EQUAL_3_8_0 = (sys.version_info.major, sys.version_info.minor) >= (3, 8)
 _PYTHON_GREATER_EQUAL_3_10_0 = (sys.version_info.major, sys.version_info.minor) >= (3, 10)
-_TORCH_GREATER_EQUAL_1_9_1 = compare_version("torch", operator.ge, "1.9.1")
 _TORCH_GREATER_EQUAL_1_10 = compare_version("torch", operator.ge, "1.10.0")
 _TORCH_LESSER_EQUAL_1_10_2 = compare_version("torch", operator.le, "1.10.2")
 _TORCH_GREATER_EQUAL_1_11 = compare_version("torch", operator.ge, "1.11.0")
 _TORCH_GREATER_EQUAL_1_12 = compare_version("torch", operator.ge, "1.12.0")
-_TORCH_GREATER_EQUAL_1_13 = compare_version("torch", operator.ge, "1.13.0", use_base_version=True)
+_TORCH_GREATER_EQUAL_1_13 = compare_version("torch", operator.ge, "1.13.0")
+_TORCH_GREATER_EQUAL_1_14 = compare_version("torch", operator.ge, "1.14.0", use_base_version=True)
 
 _APEX_AVAILABLE = module_available("apex.amp")
 _DALI_AVAILABLE = module_available("nvidia.dali")
@@ -42,12 +41,6 @@ _PSUTIL_AVAILABLE = package_available("psutil")
 _RICH_AVAILABLE = package_available("rich") and compare_version("rich", operator.ge, "10.2.2")
 _TORCH_QUANTIZE_AVAILABLE = bool([eg for eg in torch.backends.quantized.supported_engines if eg != "none"])
 _TORCHVISION_AVAILABLE = RequirementCache("torchvision")
-_XLA_AVAILABLE: bool = package_available("torch_xla")
-
-
-from lightning_lite.utilities.xla_device import XLADeviceUtils  # noqa: E402
-
-_TPU_AVAILABLE = XLADeviceUtils.tpu_device_exists()
 
 if _POPTORCH_AVAILABLE:
     import poptorch
